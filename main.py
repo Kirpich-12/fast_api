@@ -1,91 +1,99 @@
-from fastapi import FastAPI, Request, Response, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
-from datetime import datetime, timedelta
+import csv
+from datetime import timedelta, datetime
 import uuid
-from fastapi.responses import HTMLResponse, RedirectResponse
+import pandas as pd
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-import csv
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 app = FastAPI()
-# Подключаем статику и шаблоны
 app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/images", StaticFiles(directory="images"), name="images")
 templates = Jinja2Templates(directory="templates")
-USERS_FILE = "user.csv"
 
+
+USERS = "users.csv"
+SESSION_TTL = timedelta(10)
 sessions = {}
-SESSION_TTL = timedelta(minutes=10)
+white_urls = ["/", "/login", "/logout"]
+
 
 @app.middleware("http")
 async def check_session(request: Request, call_next):
-    # Разрешаем доступ к главной, login/logout и ко всей статике
-    if request.url.path.startswith("/static") or request.url.path in ["/", "/login", "/logout"]:
+    if request.url.path.startswith("/static") or request.url.path in white_urls:
         return await call_next(request)
 
     session_id = request.cookies.get("session_id")
     if not session_id or session_id not in sessions:
-        return RedirectResponse(url="/login")
+        return RedirectResponse(url="/")
 
-    created_at = sessions[session_id]
-    if datetime.now() - created_at > SESSION_TTL:
+    created_session = sessions[session_id]
+    if datetime.now() - created_session > SESSION_TTL:
         del sessions[session_id]
-        return RedirectResponse(url="/login")
+        return RedirectResponse(url="/")
 
     return await call_next(request)
 
-def load_users():
-    """Загружаем всех пользователей из CSV"""
-    users = {}
-    with open(USERS_FILE, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            users[row["username"]] = {
-                "username": row["username"],
-                "password_hash": row["password_hash"],
-                "avatar": row["avatar_path"]
-            }
-    return users
-
 @app.get("/", response_class=HTMLResponse)
 @app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request):
+def get_login_page(request: Request):
     return templates.TemplateResponse("login.html", {"request": request})
 
 @app.post("/login")
-async def login(request: Request, username: str = Form(...), password: str = Form(...)):
-    users = load_users()
-    user = users.get(username)
-    if user and password == user["password_hash"]:
-        session_id = str(uuid.uuid4())
-        sessions[session_id] = datetime.now()
-        response = RedirectResponse(url=f"/home/{username}", status_code=302)
-        response.set_cookie(key="session_id", value=session_id, httponly=True)
-        return response
-    return templates.TemplateResponse(
-        "login.html",
-        {"request": request, "error": "Неверный логин или пароль"}
-    )
+def login(request: Request,
+          username: str = Form(...),
+          password: str = Form(...)):
+    users = pd.read_csv(USERS)
+    if username in users['users'].values:
+        user_data = users[users['users'] == username].iloc[0]
+        if str(user_data['password']) == password:
+            session_id = str(uuid.uuid4())
+            sessions[session_id] = datetime.now()
+            response = RedirectResponse(url=f"/home/{username}", status_code=302)
+            response.set_cookie(key="session_id", value=session_id)
+            return response
+        else:
+            return templates.TemplateResponse("login.html", {"request": request, "error": "Неверный пароль"})
+    else:
+        return templates.TemplateResponse("login.html", {"request": request, "error": "Неверный логин"})
+
+@app.get("/logout", response_class=HTMLResponse)
+def logout(request: Request):
+    session_id = request.cookies.get("session_id")
+    if session_id in sessions:
+        del sessions[session_id]    
+    return templates.TemplateResponse("login.html", {"request": request, "message": "Сессия завершена"})
 
 @app.get("/home/{username}", response_class=HTMLResponse)
 def home(request: Request, username: str):
-    users = load_users()
-    user = users.get(username)
-    if not user:
+    users = pd.read_csv(USERS)
+    user = users['users']
+    if user.empty:
         return RedirectResponse("/")
-    return templates.TemplateResponse("home.html", {"request": request, "user": user})
+    return templates.TemplateResponse("register.html", {"request": request})
 
-@app.get("/protected")
-async def protected():
-    return {"message": "Это защищённая страница!"}
+@app.get("/home/admin", response_class=HTMLResponse)
+def get_start_page(request: Request):
+    return templates.TemplateResponse("register.html",
+                                       {"request": request})
 
-@app.get("/profile")
-async def profile():
-    return {"user": "demo_user", "info": "Ваш профиль"}
+@app.post("/login", response_class=HTMLResponse)
+def login(request: Request,
+          username:str = Form(...),
+          password:str = Form(...)):
+    print('asdadas')
+    users = pd.read_csv(USERS)
+    users.loc[len(users)] = [username, password]
 
-@app.get("/logout")
-async def logout(request: Request):
-     session_id = request.cookies.get("session_id")
-     del sessions[session_id]
-     return templates.TemplateResponse("login.html", {"request": request, "message":"сессия завершена"})
+
+@app.exception_handler(StarletteHTTPException)
+async def not_found_handler(request: Request, exc: StarletteHTTPException):
+    if exc.status_code == 404:
+        return templates.TemplateResponse(
+            "404.html",
+            {"request": request, "path": request.url.path},
+            status_code=404
+        )
+    raise exc

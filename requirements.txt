@@ -3,3 +3,4 @@ uvicorn
 pandas
 jinja2
 pillow
+python-multipart

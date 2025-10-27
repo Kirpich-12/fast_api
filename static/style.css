@@ -25,8 +25,8 @@ input, button {
 .error {
     color: red;
 }
-.message {
-    color: rgb(0, 255, 191);
+.meassage {
+    color: rgb(132, 194, 145);
 }
 body.dark {
     background: #222;
@@ -34,4 +34,47 @@ body.dark {
 }
 body.dark .container {
     border-color: #555;
+}
+
+
+body {
+    margin: 0;
+    padding: 0;
+    font-family: "Segoe UI", sans-serif;
+    background: linear-gradient(135deg, #141e30, #243b55);
+    color: #fff;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.container {
+    text-align: center;
+}
+
+h1 {
+    font-size: 8rem;
+    margin: 0;
+    color: #ff4b2b;
+    text-shadow: 0 0 10px rgba(255, 75, 43, 0.6);
+}
+
+p {
+    font-size: 1.2rem;
+    margin: 20px 0;
+}
+
+.btn {
+    display: inline-block;
+    padding: 10px 20px;
+    background: #ff4b2b;
+    color: #fff;
+    text-decoration: none;
+    border-radius: 8px;
+    transition: background 0.3s;
+}
+
+.btn:hover {
+    background: #ff6a3d;
 }
