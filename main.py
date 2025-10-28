@@ -1,26 +1,42 @@
-import csv
 from datetime import timedelta, datetime
 import hashlib
 import logging
 import uuid
 import pandas as pd
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
+from fastapi import  FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from time import sleep
+from contextlib import asynccontextmanager
+import asyncio
 
 #TODO
-#заменить @app.on_event("startup")
-#hhtps
-#выкидывание в режие реаального времени
+#https
+#выкидывание в режиме реального времени
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    asyncio.create_task(check_sessions_task())
+    yield
 
 
-#Логгер
+
+app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
+USERS = "users.csv"
+UPDATE_TIME = 5
+SESSION_TTL = timedelta(seconds=15)
+sessions = {}
+white_urls = ["/", "/login", "/logout", "/register", ]
+
+
+"""Логгер"""
+
 logger = logging.getLogger("app")
 logger.setLevel(logging.INFO)
-
 
 file_handler = logging.FileHandler("app.log", mode="a", encoding="utf-8")
 file_handler.setLevel(logging.INFO)
@@ -39,55 +55,41 @@ uvicorn_access_logger = logging.getLogger("uvicorn.access")
 uvicorn_error_logger = logging.getLogger("uvicorn.error")
 
 
-app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+"""Вспомогательные функции"""
 
-USERS = "users.csv"
-SESSION_TTL = timedelta(seconds=15)
-sessions = {}
-white_urls = ["/", "/login", "/logout", "/register", ]
-
-
-#Вспомогтельные функции
-
-#хеширование пароля
-def hash_password(password:str)-> str:
+def hash_password(password: str) -> str:
     """Хеширование пароля"""
     hash_object = hashlib.sha256(password.encode('utf-8'))
-    hex_dig = hash_object.hexdigest()
-    return str(hex_dig)
+    return hash_object.hexdigest()
 
-#обновление времени сесии 
 def update_session(response: Response):
+    """Обновление времени сессии"""
     response.set_cookie(
         key="session_time",
-        value=datetime.now(),
-        )
+        value=str(datetime.now()),
+    )
     return response
 
-async def deleter(request: Request):
-    session_id = request.cookies.get("session_id")
-    created_session = sessions[session_id]
-    if datetime.now() - created_session > SESSION_TTL:
-        del sessions[session_id]
-        logger.info("Сессия истекла, перенаправление на /")
-        return RedirectResponse(url="/")
+async def check_sessions_task():
+    """Проверка истёкших сессий"""
+    while True:
+        expired_ids = []
+        for id, created_session in list(sessions.items()):
+            if datetime.now() - created_session > SESSION_TTL:
+                expired_ids.append(id)
 
-@app.on_event("startup")
-async def cheaker(request: Request):
-    await deleter(request)
-    print('checked')
-    await sleep(5)
-    cheaker()
+        for id in expired_ids:
+            del sessions[id]
+            logger.info(f"Сессия {id} истекла и была удалена")
 
-
+        await asyncio.sleep(UPDATE_TIME)
 
 #получение роли
 def get_role(request: Request) -> str:
     """запрашивает роль пользователя"""
     role = request.cookies.get("role")
     return role
+
 #получение имени пользователя
 def get_username(request: Request) -> str:
     """запрашивает имя пользователя"""
@@ -105,6 +107,8 @@ def role_check(request: Request, roles:list) -> bool:
     return (role in roles)
 
 
+"""Логика сайта"""
+
 #проверка сессии
 @app.middleware("http")
 async def check_session(request: Request, call_next):
@@ -116,11 +120,14 @@ async def check_session(request: Request, call_next):
     if not session_id or session_id not in sessions:
         logger.warning(f"Неавторизованный доступ: {path}")
         return RedirectResponse(url="/")
-
     
+    created_session = sessions[session_id]
+    if datetime.now() - created_session > SESSION_TTL:
+        del sessions[session_id]
+        logger.info("Сессия истекла, перенаправление на /")
+        return RedirectResponse(url="/")
 
     return await call_next(request)
-
 
 
 #страница входа
@@ -240,8 +247,7 @@ def register(request: Request,
 
 #404
 @app.exception_handler(StarletteHTTPException)
-async def not_found_handler(request: Request, exc: StarletteHTTPException, response:Response):
-    update_session(response)
+async def not_found_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code == 404:
         logger.warning(f"404 Not Found: {request.url.path}")
         return templates.TemplateResponse(

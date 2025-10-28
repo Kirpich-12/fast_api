@@ -4,5 +4,4 @@ pandas
 jinja2
 pillow
 python-multipart
-hashlib
 logging
