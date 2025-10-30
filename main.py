@@ -2,6 +2,7 @@ from datetime import timedelta, datetime
 import hashlib
 import logging
 import uuid
+import uvicorn
 import pandas as pd
 from fastapi import  FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -15,14 +16,9 @@ import asyncio
 #https
 #выкидывание в режиме реального времени
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    asyncio.create_task(check_sessions_task())
-    yield
 
 
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
@@ -69,20 +65,6 @@ def update_session(response: Response):
         value=str(datetime.now()),
     )
     return response
-
-async def check_sessions_task():
-    """Проверка истёкших сессий"""
-    while True:
-        expired_ids = []
-        for id, created_session in list(sessions.items()):
-            if datetime.now() - created_session > SESSION_TTL:
-                expired_ids.append(id)
-
-        for id in expired_ids:
-            del sessions[id]
-            logger.info(f"Сессия {id} истекла и была удалена")
-
-        await asyncio.sleep(UPDATE_TIME)
 
 #получение роли
 def get_role(request: Request) -> str:
@@ -188,7 +170,7 @@ def logout(request: Request, response:Response):
     if session_id in sessions:
         del sessions[session_id]
         logger.info("Пользователь вышел из системы и сессия завершена")
-    return templates.TemplateResponse("login.html", {"request": request, "message": "Сессия завершена"})
+    return templates.TemplateResponse("login.html", {"request": request, "message": "Сессия завершена из-за таймаута"})
 
 
 #main
@@ -257,3 +239,13 @@ async def not_found_handler(request: Request, exc: StarletteHTTPException):
         )
     logger.error(f"Ошибка {exc.status_code}: {request.url.path}")
     raise exc
+
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host="127.0.0.1",
+        port=8000,
+        ssl_certfile="cert.pem",
+        ssl_keyfile="key.pem"
+    )
