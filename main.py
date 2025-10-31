@@ -5,17 +5,68 @@ import uuid
 import uvicorn
 import pandas as pd
 from fastapi import  FastAPI, Form, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from contextlib import asynccontextmanager
-import asyncio
+from enum import Enum, StrEnum
+from dataclasses import dataclass
+from typing import Optional, Union
 
 #TODO
-#https
-#выкидывание в режиме реального времени
 
+class UserRole(StrEnum):
+    ADMIN = 'admin'
+    USER = 'user'
+
+
+@dataclass
+class User:
+    username: str
+    password_hash: str
+    role: UserRole
+
+
+def create_user(s: pd.Series) -> User:
+    return User(
+        username=s["usernname"],
+        password_hash=s["password"],
+        role=UserRole(s["role"])
+        
+    )
+
+
+class AppException(Exception):
+    pass
+
+
+class UserNotFoundException(AppException):
+    pass
+
+
+class DataParser:
+
+    def __init__(
+            self,
+            csv_path: str
+    ):
+        self._csv_path = csv_path
+        with open(self._csv_path, mode="w"):
+            pass
+        
+
+    def get_user(
+            self,
+            username: str
+    ) -> User:
+        users = pd.read_csv(self._csv_path)
+
+        if username in users['users'].values:
+            user_data = users[users['users'] == username].iloc[0]
+            return create_user(user_data)
+        
+        raise UserNotFoundException(f"User with username = {username} not found")
+    
 
 
 app = FastAPI()
@@ -27,6 +78,11 @@ UPDATE_TIME = 5
 SESSION_TTL = timedelta(seconds=15)
 sessions = {}
 white_urls = ["/", "/login", "/logout", "/register", ]
+
+
+data_parser = DataParser(csv_path=USERS)
+        
+    
 
 
 """Логгер"""
@@ -124,32 +180,24 @@ def get_login_page(request: Request, response:Response):
 def login(request: Request,
           response:Response,
           username: str = Form(...),
-          password: str = Form(...)):
+          password: str = Form(...),
+):
     logger.info(f"Попытка входа пользователя: {username}")
     update_session(response)
 
     try:
-        users = pd.read_csv(USERS)
-    except FileNotFoundError:
-        logger.error("Файл users.csv не найден")
-        raise HTTPException(status_code=500, detail="Система пользователей недоступна")
+        user = data_parser.get_user(username=username)
 
-    if username in users['users'].values:
-        user_data = users[users['users'] == username].iloc[0]
-        stored_hash = str(user_data['password'])
-        user_role = user_data["role"]
-        hex_dig = hash_password(password)
-
-        if stored_hash == hex_dig:
+        if user.password_hash == hash_password(password):
             session_id = str(uuid.uuid4())
             sessions[session_id] = datetime.now()
             logger.info(f"Пользователь {username} вошёл в систему")
             
             response = RedirectResponse(url=f"/home/{username}", status_code=302)
             response.set_cookie(key="session_id", value=session_id)
-            response.set_cookie(key="role", value=user_role)
+            response.set_cookie(key="role", value=user.role)
             response.set_cookie(key="username", value=username)
-            response.set_cookie(key="session_time", value=datetime.now)
+            response.set_cookie(key="session_time", value=datetime.now())
 
             logger.info(f'Cookie:{request.cookies}')
 
@@ -157,9 +205,13 @@ def login(request: Request,
         else:
             logger.warning(f"Неверный пароль для пользователя {username}")
             return templates.TemplateResponse("login.html", {"request": request, "error": "Неверный пароль"})
-    else:
+    
+    except UserNotFoundException as e:
         logger.warning(f"Попытка входа с несуществующим логином: {username}")
         return templates.TemplateResponse("login.html", {"request": request, "error": "Неверный логин"})
+    
+    except InvalidPassword:
+        pass
 
 
 #logout
@@ -192,7 +244,7 @@ def home(request: Request, username: str, response:Response):
 # регистрация
 @app.get("/register", response_class=HTMLResponse)
 def get_register_page(request: Request, response:Response):
-    if role_check(request, ['admin']):
+    if role_check(request, [UserRole.ADMIN]):
         update_session(response)
         return templates.TemplateResponse("register.html", {"request": request})
     else:
@@ -242,6 +294,7 @@ async def not_found_handler(request: Request, exc: StarletteHTTPException):
 
 
 if __name__ == "__main__":
+
     uvicorn.run(
         "main:app",
         host="127.0.0.1",
