@@ -5,3 +5,5 @@ jinja2
 pillow
 python-multipart
 logging
+selenium
+pytest

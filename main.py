@@ -4,16 +4,14 @@ import logging
 import uuid
 import uvicorn
 import pandas as pd
-from fastapi import  FastAPI, Form, HTTPException, Request, Response
+from fastapi import  FastAPI, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from enum import Enum, StrEnum
+from enum import StrEnum
 from dataclasses import dataclass
-from typing import Optional, Union
 
-#TODO
 
 class UserRole(StrEnum):
     ADMIN = 'admin'
@@ -29,7 +27,7 @@ class User:
 
 def create_user(s: pd.Series) -> User:
     return User(
-        username=s["usernname"],
+        username=s["users"],
         password_hash=s["password"],
         role=UserRole(s["role"])
         
@@ -43,30 +41,40 @@ class AppException(Exception):
 class UserNotFoundException(AppException):
     pass
 
+class InvalidPassword(AppException):
+    pass
+
 
 class DataParser:
-
-    def __init__(
-            self,
-            csv_path: str
-    ):
+    def __init__(self,
+                 csv_path: str):
         self._csv_path = csv_path
-        with open(self._csv_path, mode="w"):
-            pass
-        
 
-    def get_user(
-            self,
-            username: str
-    ) -> User:
-        users = pd.read_csv(self._csv_path)
+        # Если файл не существует — создаём с заголовками
+        try:
+            pd.read_csv(self._csv_path)
+        except (FileNotFoundError, pd.errors.EmptyDataError):
+            df = pd.DataFrame(columns=["users", "password", "role"])
+            df.to_csv(self._csv_path, index=False)
+
+    def get_user(self, username: str) -> User:
+        try:
+            users = pd.read_csv(self._csv_path)
+        except (FileNotFoundError, pd.errors.EmptyDataError):
+            raise UserNotFoundException(f"User with username = {username} not found")
 
         if username in users['users'].values:
             user_data = users[users['users'] == username].iloc[0]
             return create_user(user_data)
-        
+
         raise UserNotFoundException(f"User with username = {username} not found")
-    
+
+    def get_DF(self):
+        try:
+            df = pd.read_csv(self._csv_path)
+        except (FileNotFoundError, pd.errors.EmptyDataError):
+            df = pd.DataFrame(columns=["users", "password", "role"])
+        return df
 
 
 app = FastAPI()
@@ -258,26 +266,42 @@ def register(request: Request,
              response:Response,
              username: str = Form(...),
              password: str = Form(...),
-             role:str = Form(...)):
+             role: str = Form(...)):
+
     update_session(response)
-    logger.info(f"Регистрация нового пользователя: {username}")
+    logger.info(f"Попытка регистрации нового пользователя: {username}")
+
+    if not role_check(request, [UserRole.ADMIN]):
+        logger.warning(f"Попытка регистрации без прав - {get_username(request)}")
+        return templates.TemplateResponse("403.html", {"request": request})
+
     try:
-        users = pd.read_csv(USERS)
-    except FileNotFoundError:
-        users = pd.DataFrame(columns=["users", "password", "role"])
-
-    if username in users["users"].values:
-        logger.warning(f"Попытка регистрации уже существующего пользователя: {username}")
+        user = data_parser.get_user(username=username)
+        logger.warning(f"Попытка регистрации существующего пользователя: {username}")
         return templates.TemplateResponse("register.html", {"request": request, "error": "Пользователь уже существует"})
+    except UserNotFoundException:
+        logger.info(f"Пользователь {username} не найден, продолжаем регистрацию")
 
-    hex_dig = hash_password(password)
+    except Exception as e:
+        logger.error(f"Ошибка при проверке пользователя {username}: {e}")
+        return templates.TemplateResponse("register.html", {"request": request, "error": "Ошибка системы"})
 
-    users.loc[len(users)] = [username, str(hex_dig), role]
-    users.to_csv(USERS, index=False)
-    logger.info(f"Пользователь {username} успешно зарегистрирован")
+    try:
+        try:
+            users = data_parser.get_DF()
+        except (FileNotFoundError, pd.errors.EmptyDataError):
+            users = pd.DataFrame(columns=["users", "password", "role"])
+        password_hash = hash_password(password)
 
-    return templates.TemplateResponse("login.html", {"request": request, "message": "Регистрация успешна"})
+        users.loc[len(users)] = [username, password_hash, role]
+        users.to_csv(USERS, index=False)
+        logger.info(f"Пользователь {username} успешно зарегистрирован")
 
+        return templates.TemplateResponse("login.html", {"request": request, "message": "Регистрация успешна"})
+
+    except Exception as e:
+        logger.error(f"Ошибка регистрации пользователя {username}: {e}")
+        return templates.TemplateResponse("register.html", {"request": request, "error": "Ошибка сохранения"})
 
 #404
 @app.exception_handler(StarletteHTTPException)
